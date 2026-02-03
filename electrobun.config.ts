@@ -1,3 +1,4 @@
+import type { ElectrobunConfig } from "electrobun";
 import packageJson from "./package.json" assert { type: "json" };
 
 export default {
@@ -29,10 +30,15 @@ export default {
             }
         }
     },
+    "runtime": {
+        exitOnLastWindowClosed: false
+    },
     "scripts": {
         "postBuild": "./scripts/postBuild.ts"
     },
     "release": {
         "baseUrl": "https://colab-releases.blackboard.sh/"
     }
-}
+} satisfies ElectrobunConfig;
+
+
