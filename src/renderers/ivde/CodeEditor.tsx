@@ -271,6 +271,7 @@ export const Editor = ({ currentTabId }: { currentTabId: string }) => {
   let editor: monaco.editor.IStandaloneCodeEditor;
   let editorRef: HTMLDivElement | undefined;
   let prevListeners: any[] = [];
+  let providerDisposables: monaco.IDisposable[] = [];
   let resizeObserver: ResizeObserver;
   const windowId = state.windowId;
   const workspaceId = state.workspace.id;
@@ -646,7 +647,7 @@ export const Editor = ({ currentTabId }: { currentTabId: string }) => {
 
     if (_currentTab.path.endsWith(".ts") || _currentTab.path.endsWith(".tsx")) {
 
-      monaco.languages.registerHoverProvider("typescript", {
+      providerDisposables.push(monaco.languages.registerHoverProvider("typescript", {
         provideHover: function (model, position) {
           // Note: since this is a global provider it will be triggered
           // along with all the other CodeEditor providers registered
@@ -684,9 +685,9 @@ export const Editor = ({ currentTabId }: { currentTabId: string }) => {
             });
           });
         },
-      });
+      }));
 
-      monaco.languages.registerDefinitionProvider("typescript", {
+      providerDisposables.push(monaco.languages.registerDefinitionProvider("typescript", {
         provideDefinition: function (model, position, token) {
           return new Promise((resolve) => {
             if (definitionProviderResolver) {
@@ -711,15 +712,12 @@ export const Editor = ({ currentTabId }: { currentTabId: string }) => {
             });
           });
         },
-      });
+      }));
 
-      // Test if Monaco's inline completion commands are available
-      console.log("Monaco editor commands:", editor.getSupportedActions().map(a => a.id).filter(id => id.includes('inline')));
-      
-      // Register AI inline completion provider for grey text suggestions  
+      // Register AI inline completion provider for grey text suggestions
       const languagesToRegister = ["typescript", "javascript", "typescriptreact", "javascriptreact"];
       languagesToRegister.forEach(lang => {
-        const disposable = monaco.languages.registerInlineCompletionsProvider(lang, {
+        providerDisposables.push(monaco.languages.registerInlineCompletionsProvider(lang, {
         provideInlineCompletions: async function (model, position, context, token) {
           
           // Note: since this is a global provider it will be triggered
@@ -876,7 +874,7 @@ export const Editor = ({ currentTabId }: { currentTabId: string }) => {
         freeInlineCompletions: function (completions) {
           // Nothing to clean up
         },
-      });
+      }));
       });
     }
 
@@ -890,6 +888,9 @@ export const Editor = ({ currentTabId }: { currentTabId: string }) => {
       resizeObserver?.unobserve(editorRef);
     }
     resizeObserver?.disconnect();
+    // Dispose global language providers registered by this editor instance
+    providerDisposables.forEach((d) => d.dispose());
+    providerDisposables = [];
     // TODO: consider telling server when the last file is closed to shut down tsserver
   });
 
@@ -1034,50 +1035,56 @@ const updateMarkers = (model: monaco.editor.ITextModel) => {
 // functions that interface with tsServer
 // https://github.com/microsoft/TypeScript/blob/main/src/server/protocol.ts
 // tsServer requests:
+let diagnosticsDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
 const checkTypescriptForErrors = async (
   model: monaco.editor.ITextModel,
   sendTsServerRequest: (params: any) => void
 ) => {
-  const filePath = model.uri.path;
+  // Debounce diagnostics so file content can render before CPU-heavy tsserver work starts.
+  // Also avoids tsserver dropping requests when three arrive simultaneously.
+  if (diagnosticsDebounceTimer) {
+    clearTimeout(diagnosticsDebounceTimer);
+  }
 
-  // todo (yoav): since monaco.editor.setModelMarkers(model, "custom", errors);
-  // replaces the markers, we should store suggestions, syntactic, and semantic errors
-  // in separate stores and then combine them into a single array of markers
-  // todo (yoav): we probably also want this so that we can show the errors in the
-  // sidebar and let the user click on them to jump to the error or other places
-  sendTsServerRequest({
-    command: "suggestionDiagnosticsSync",
-    args: {
-      file: filePath,
-    },
-  });
+  diagnosticsDebounceTimer = setTimeout(() => {
+    diagnosticsDebounceTimer = null;
+    const filePath = model.uri.path;
 
-  // setTimeout(() => {
-  // syntax, eg: missing closing bracket
-  sendTsServerRequest({
-    command: "syntacticDiagnosticsSync",
-    args: {
-      file: filePath,
-      includeLinePosition: true,
-    },
-  });
+    // todo (yoav): since monaco.editor.setModelMarkers(model, "custom", errors);
+    // replaces the markers, we should store suggestions, syntactic, and semantic errors
+    // in separate stores and then combine them into a single array of markers
+    // todo (yoav): we probably also want this so that we can show the errors in the
+    // sidebar and let the user click on them to jump to the error or other places
+    sendTsServerRequest({
+      command: "suggestionDiagnosticsSync",
+      args: {
+        file: filePath,
+      },
+    });
 
-  // setTimeout(() => {
-  // semantix, eg: type mismatch
-  sendTsServerRequest({
-    command: "semanticDiagnosticsSync",
-    args: {
-      file: filePath,
-      includeLinePosition: true,
-    },
-  });
-  // todo (yoav): find a more deterministic way to do this
-  // tsserver drops the third request when sending three at a time
-  // 10ms is not enough here we need 100ms
-  // }, 100);
-  // }, 100);
-  // syntacticDiagnosticsSync
-  // semanticDiagnosticsSync
+    // syntax, eg: missing closing bracket
+    setTimeout(() => {
+      sendTsServerRequest({
+        command: "syntacticDiagnosticsSync",
+        args: {
+          file: filePath,
+          includeLinePosition: true,
+        },
+      });
+    }, 100);
+
+    // semantic, eg: type mismatch
+    setTimeout(() => {
+      sendTsServerRequest({
+        command: "semanticDiagnosticsSync",
+        args: {
+          file: filePath,
+          includeLinePosition: true,
+        },
+      });
+    }, 200);
+  }, 500);
 };
 
 

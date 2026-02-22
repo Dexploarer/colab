@@ -1663,55 +1663,74 @@ const createWindow = (workspaceId: string, window?: WindowConfigType, offset?: {
             console.error(err);
           }
         },
-        readFile: ({ path }) => {
+        readFile: async ({ path }) => {
           try {
+            const fs = await import('fs/promises');
+
             // Check if file exists and get size
-            const stats = statSync(path);
+            const stats = await fs.stat(path);
             const fileSizeBytes = stats.size;
 
             // Define limits
             const MAX_INITIAL_LOAD_BYTES = 10 * 1024 * 1024; // 10MB
             const BINARY_CHECK_BYTES = 8000; // Check first 8KB for binary content
 
-            // Read a sample to check if binary
-            const sampleBuffer = Buffer.alloc(Math.min(BINARY_CHECK_BYTES, fileSizeBytes));
-            const fd = require('fs').openSync(path, 'r');
-            require('fs').readSync(fd, sampleBuffer, 0, sampleBuffer.length, 0);
-            require('fs').closeSync(fd);
+            // Skip binary detection for known text file extensions
+            const ext = path.split('.').pop()?.toLowerCase() || '';
+            const knownTextExtensions = new Set([
+              'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs',
+              'html', 'htm', 'css', 'scss', 'less',
+              'json', 'jsonc', 'yaml', 'yml', 'toml', 'ini', 'xml', 'svg',
+              'md', 'mdx', 'txt', 'log',
+              'sh', 'bash', 'zsh', 'fish',
+              'py', 'rb', 'go', 'rs', 'java', 'kt', 'swift',
+              'c', 'cpp', 'h', 'hpp', 'cs', 'php', 'r', 'lua', 'pl', 'scala', 'zig',
+              'sql', 'graphql', 'gql', 'proto',
+              'lock', 'env', 'gitignore', 'dockerignore',
+            ]);
+            const isKnownText = knownTextExtensions.has(ext);
 
-            // Check for binary content (null bytes or high percentage of non-printable chars)
-            let nonPrintableCount = 0;
-            let nullByteFound = false;
-            for (let i = 0; i < sampleBuffer.length; i++) {
-              const byte = sampleBuffer[i];
-              if (byte === 0) {
-                nullByteFound = true;
-                break;
+            if (!isKnownText) {
+              // Read a sample to check if binary
+              const fileHandle = await fs.open(path, 'r');
+              const sampleBuffer = Buffer.alloc(Math.min(BINARY_CHECK_BYTES, fileSizeBytes));
+              await fileHandle.read(sampleBuffer, 0, sampleBuffer.length, 0);
+              await fileHandle.close();
+
+              // Check for binary content (null bytes or high percentage of non-printable chars)
+              let nonPrintableCount = 0;
+              let nullByteFound = false;
+              for (let i = 0; i < sampleBuffer.length; i++) {
+                const byte = sampleBuffer[i];
+                if (byte === 0) {
+                  nullByteFound = true;
+                  break;
+                }
+                // Count non-printable characters (excluding common whitespace)
+                if (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) {
+                  nonPrintableCount++;
+                }
               }
-              // Count non-printable characters (excluding common whitespace)
-              if (byte < 32 && byte !== 9 && byte !== 10 && byte !== 13) {
-                nonPrintableCount++;
+
+              const nonPrintableRatio = nonPrintableCount / sampleBuffer.length;
+              const isBinary = nullByteFound || nonPrintableRatio > 0.3;
+
+              if (isBinary) {
+                return {
+                  textContent: "",
+                  isBinary: true,
+                  totalBytes: fileSizeBytes,
+                };
               }
-            }
-
-            const nonPrintableRatio = nonPrintableCount / sampleBuffer.length;
-            const isBinary = nullByteFound || nonPrintableRatio > 0.3;
-
-            if (isBinary) {
-              return {
-                textContent: "",
-                isBinary: true,
-                totalBytes: fileSizeBytes,
-              };
             }
 
             // For text files, check if we need partial loading
             if (fileSizeBytes > MAX_INITIAL_LOAD_BYTES) {
               // Load only the first chunk
+              const fileHandle = await fs.open(path, 'r');
               const partialBuffer = Buffer.alloc(MAX_INITIAL_LOAD_BYTES);
-              const fd = require('fs').openSync(path, 'r');
-              require('fs').readSync(fd, partialBuffer, 0, MAX_INITIAL_LOAD_BYTES, 0);
-              require('fs').closeSync(fd);
+              await fileHandle.read(partialBuffer, 0, MAX_INITIAL_LOAD_BYTES, 0);
+              await fileHandle.close();
 
               const partialContent = partialBuffer.toString('utf-8');
 
@@ -1724,7 +1743,7 @@ const createWindow = (workspaceId: string, window?: WindowConfigType, offset?: {
             }
 
             // File is small enough, load it all
-            const contents = readFileSync(path, "utf-8");
+            const contents = await fs.readFile(path, "utf-8");
             return {
               textContent: contents,
               isBinary: false,
