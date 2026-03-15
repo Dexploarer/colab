@@ -3347,7 +3347,6 @@ function openBunnyWindow(screenX?: number, screenY?: number) {
 		url: "views://bunny/index.html",
 		titleBarStyle: "hidden",
 		transparent: true,
-		passthrough: true,
 		frame: { width: size, height: size, x, y },
 		rpc: bunnyRpc,
 	});
